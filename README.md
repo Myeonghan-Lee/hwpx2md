@@ -1,63 +1,51 @@
 # 📝 HWPX → Markdown 변환기
 
-한컴오피스 한글의 HWPX 파일을 Markdown(.md)으로 변환하는 웹 앱입니다.
+한글(HWPX) 문서를 Markdown으로 변환하는 웹 애플리케이션입니다.
 
 ## ✨ 주요 기능
 
 | 기능 | 설명 |
 |------|------|
-| 📄 단일 파일 변환 | HWPX 1개 업로드 → Markdown **미리보기** + 다운로드 |
-| 📦 일괄 변환 | HWPX 여러 개 업로드 → **ZIP으로 일괄 다운로드** |
-| 🖼️ 이미지 추출 | 문서 내 이미지를 함께 추출하여 ZIP에 포함 |
-| 📊 표 변환 | HWPX 테이블 → Markdown 테이블 자동 변환 |
-| ✏️ 서식 지원 | **굵게**, *기울임*, ~~취소선~~ 등 서식 유지 |
+| 📄 단일 파일 변환 | Markdown 렌더링 미리보기 + 소스코드 뷰 |
+| 📦 다중 파일 변환 | 일괄 변환 후 ZIP 다운로드 |
+| 🎨 서식 보존 | 제목, **굵게**, *기울임*, ~~취소선~~, 표 |
+| 🖼️ 이미지 추출 | BinData 내 이미지를 ZIP으로 함께 제공 |
 
 ## 🚀 배포 방법
 
-### 1. GitHub 저장소 생성
+### Streamlit Cloud
 
-```bash
-git init
-git add .
-git commit -m "Initial commit: HWPX to Markdown converter"
-git branch -M main
-git remote add origin https://github.com/YOUR_USERNAME/hwpx2md.git
-git push -u origin main
-```
+1. 이 저장소를 Fork 또는 Clone
+2. [share.streamlit.io](https://share.streamlit.io) 접속
+3. Repository 선택 → Deploy
 
-### 2. Streamlit Cloud 배포
-
-1. [share.streamlit.io](https://share.streamlit.io) 접속
-2. **New app** 클릭
-3. GitHub 저장소 연결
-4. Main file: `app.py` 선택
-5. **Deploy!** 클릭
-
-## 📁 프로젝트 구조
-
-```
-hwpx2md/
-├── app.py                  # Streamlit 메인 앱
-├── hwpx_converter.py       # HWPX→MD 변환 엔진
-├── requirements.txt        # Python 의존성
-├── .streamlit/
-│   └── config.toml         # Streamlit 테마 설정
-└── README.md               # 이 문서
-```
-
-## 🛠️ 로컬 실행
+### 로컬 실행
 
 ```bash
 pip install -r requirements.txt
 streamlit run app.py
 ```
 
-## 📋 지원 범위
+## 📁 프로젝트 구조
 
-- ✅ 제목 (Heading 1~6)
-- ✅ 본문 텍스트
-- ✅ 굵게 / 기울임 / 취소선
-- ✅ 표 (Table)
-- ✅ 이미지 추출
-- ⚠️ 각주/미주 (제한적)
-- ⚠️ 복잡한 수식 (미지원)
+```
+├── app.py                ← Streamlit 웹앱
+├── hwpx_converter.py     ← HWPX→MD 변환 엔진
+├── requirements.txt      ← 의존성
+├── .streamlit/
+│   └── config.toml       ← 테마 설정
+└── README.md
+```
+
+## 🔧 지원 서식
+
+- `# ~ ######` 제목 (개요/Heading 스타일 자동 감지)
+- `**굵게**`, `*기울임*`, `~~취소선~~`
+- Markdown 테이블 (`| 열1 | 열2 |`)
+- `<sup>`, `<sub>` 위/아래 첨자
+- 이미지 추출 (PNG, JPG 등)
+
+## ⚠️ 참고사항
+
+- `.hwp` (구형 바이너리 포맷)는 지원하지 않습니다. `.hwpx`만 지원됩니다.
+- 복잡한 레이아웃(다단, 머리글/바닥글 등)은 단순 텍스트로 변환됩니다.
