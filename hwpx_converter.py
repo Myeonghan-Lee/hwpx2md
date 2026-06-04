@@ -154,7 +154,8 @@ class HwpxToMarkdown:
 
     def _parse_paragraph_and_tables(self, p_elem, lines: list, in_cell: bool):
         """문단을 파싱하되, 내부에 표가 있으면 텍스트를 끊고 표를 별도로 추출"""
-        heading_level = self._get_heading_level(p_elem)
+        # [수정] 표 내부(in_cell=True)일 때는 제목(Heading) 서식을 강제로 무시하여 '#' 생성을 방어합니다.
+        heading_level = 0 if in_cell else self._get_heading_level(p_elem)
         current_texts = []
         
         def flush_text():
