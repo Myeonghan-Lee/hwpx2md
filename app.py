@@ -141,9 +141,12 @@ if len(uploaded_files) == 1 and len(successes) == 1:
         "📄 렌더링 미리보기", "📝 Markdown 소스", "ℹ️ 파일 정보"
     ])
 
-    with tab_render:
-        st.markdown(r.markdown)
+    #with tab_render:
+        #st.markdown(r.markdown)
 
+    with tab_render:
+        st.markdown(r.markdown, unsafe_allow_html=True)
+    
     with tab_source:
         st.code(r.markdown, language="markdown", line_numbers=True)
 
