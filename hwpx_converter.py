@@ -1,6 +1,6 @@
 """
 hwpx_converter.py
-HWPX → Markdown 변환 엔진 (단락 내장 표 완벽 분리 및 중첩 표 지원 버전)
+HWPX → Markdown 변환 엔진 (병합 셀 지원 및 분석 최적화 통합 버전)
 """
 
 import zipfile
@@ -15,6 +15,7 @@ from typing import List, Dict, Tuple, Optional
 
 @dataclass
 class ConvertResult:
+    """변환 결과 데이터 클래스"""
     filename: str
     success: bool
     markdown: str = ""
@@ -23,6 +24,8 @@ class ConvertResult:
 
 
 class HwpxToMarkdown:
+    """HWPX 파일을 Markdown으로 변환하는 엔진"""
+
     KNOWN_NAMESPACES = [
         "http://www.hancom.co.kr/hwpml/2011/paragraph",
         "http://www.hancom.co.kr/hwpml/2011/core",
@@ -144,7 +147,7 @@ class HwpxToMarkdown:
             lines.append(self._parse_table(elem))
             return
 
-        # 문단 내부 감지 (내부에 표가 섞여있을 수 있음)
+        # 문단 내부 감지
         if tag == 'p':
             self._parse_paragraph_and_tables(elem, lines, in_cell=False)
             return
@@ -154,7 +157,7 @@ class HwpxToMarkdown:
 
     def _parse_paragraph_and_tables(self, p_elem, lines: list, in_cell: bool):
         """문단을 파싱하되, 내부에 표가 있으면 텍스트를 끊고 표를 별도로 추출"""
-        # [수정] 표 내부(in_cell=True)일 때는 제목(Heading) 서식을 강제로 무시하여 '#' 생성을 방어합니다.
+        # 표 내부일 때는 제목 서식(#)을 강제로 무시
         heading_level = 0 if in_cell else self._get_heading_level(p_elem)
         current_texts = []
         
@@ -168,7 +171,6 @@ class HwpxToMarkdown:
                 lines.append(text)
             current_texts.clear()
 
-        # 문단 내부의 run과 table을 순차적으로 탐색
         for run_elem in p_elem:
             tag = self._local_tag(run_elem.tag)
             
@@ -177,7 +179,6 @@ class HwpxToMarkdown:
                 if run_text:
                     current_texts.append(run_text)
                 
-                # run 내부에 표가 숨어있다면 텍스트를 비우고 표를 삽입
                 if run_tables:
                     flush_text()
                     for t in run_tables:
@@ -197,14 +198,13 @@ class HwpxToMarkdown:
         flush_text()
 
     def _extract_run_and_tables(self, run_elem) -> Tuple[str, List[ET.Element]]:
-        """<run> 태그 내의 텍스트와 숨겨진 표를 분리하여 반환"""
+        """<run> 태그 내의 텍스트와 숨겨진 표를 분리"""
         texts = []
         tables = []
         
         def walk_run(el):
             tag = self._local_tag(el.tag)
             
-            # 표를 만나면 텍스트 추출을 중단하고 테이블 리스트에 담음
             if tag in ('table', 'tbl'):
                 tables.append(el)
                 return 
@@ -226,7 +226,7 @@ class HwpxToMarkdown:
         if not text.strip():
             return text, tables
             
-        # ~ 기호 이스케이프 (취소선 방어)
+        # 물결표 이스케이프
         text = text.replace("~", r"\~")
         
         # 서식 추출
@@ -270,16 +270,13 @@ class HwpxToMarkdown:
                     if 1 <= level <= 6: return level
         return 0
 
-# ─────────────── 테이블 파싱 (병합 셀 지원) ───────────────
+    # ─────────────── 테이블 파싱 (행/열 병합 셀 반복 채우기) ───────────────
 
     def _parse_table(self, table_elem) -> str:
-        """최상위 표를 Markdown 문법으로 변환 (행/열 병합 셀 반복 채우기 적용)"""
+        """최상위 표를 Markdown 문법으로 변환 (병합된 셀 내용 자동 반복)"""
         rows = []
-        # active_spans: 병합된 셀의 내용을 기억해두는 딕셔너리
-        # 구조: { 현재_열_인덱스: {"text": 셀내용, "count": 앞으로_채울_행의_수} }
         active_spans = {}
 
-        # .iter() 대신 직계 자식만 탐색하여 중첩 표 붕괴 방지
         for tr_elem in table_elem:
             tag = self._local_tag(tr_elem.tag)
             if tag != 'tr': continue
@@ -287,43 +284,35 @@ class HwpxToMarkdown:
             current_row = []
             col_idx = 0
             
-            # 현재 행(tr)의 셀(tc) 요소들만 추출
             tc_elems = [e for e in tr_elem if self._local_tag(e.tag) == 'tc']
             tc_iter = iter(tc_elems)
             tc_elem = next(tc_iter, None)
 
-            # 현재 행의 열(Column)을 하나씩 채워나감
             while True:
-                # 1. 윗줄에서 병합(rowspan)되어 내려온 데이터가 있다면 먼저 채움
                 while col_idx in active_spans and active_spans[col_idx]["count"] > 0:
                     current_row.append(active_spans[col_idx]["text"])
                     active_spans[col_idx]["count"] -= 1
                     if active_spans[col_idx]["count"] == 0:
-                        del active_spans[col_idx]  # 다 채웠으면 기억에서 삭제
+                        del active_spans[col_idx]
                     col_idx += 1
 
-                # 2. XML에 더 이상 읽을 셀이 없는 경우 루프 종료 판별
                 if tc_elem is None:
                     max_active_col = max(active_spans.keys()) if active_spans else -1
                     if col_idx > max_active_col:
-                        break  # 채울 빈칸도 없고, 읽을 셀도 없으면 이 행은 끝
+                        break
                     else:
-                        continue # 셀은 없지만 윗줄에서 내려온 빈칸을 마저 채워야 함
+                        continue
 
-                # 3. 새로운 셀 데이터 및 병합 정보 추출
                 cell_text = self._extract_cell_text(tc_elem)
                 rowspan = int(tc_elem.get('rowSpan', tc_elem.get('rowspan', '1')))
                 colspan = int(tc_elem.get('colSpan', tc_elem.get('colspan', '1')))
 
-                # 4. 열 병합(colspan)만큼 옆으로 복사 & 행 병합(rowspan) 예약
                 for _ in range(colspan):
                     current_row.append(cell_text)
                     if rowspan > 1:
-                        # 아랫줄들을 위해 (rowspan-1) 만큼 채우도록 예약
                         active_spans[col_idx] = {"text": cell_text, "count": rowspan - 1}
                     col_idx += 1
 
-                # 다음 셀로 이동
                 tc_elem = next(tc_iter, None)
 
             if current_row:
@@ -332,7 +321,6 @@ class HwpxToMarkdown:
         if not rows:
             return ""
 
-        # 마크다운 표 문자열 조립
         max_cols = max(len(r) for r in rows)
         for r in rows:
             while len(r) < max_cols:
@@ -349,6 +337,50 @@ class HwpxToMarkdown:
             lines.append(line)
 
         return "\n\n" + "\n".join(lines) + "\n\n"
+
+    def _parse_nested_table(self, table_elem) -> str:
+        """표 안의 표(Nested Table)를 HTML <table> 태그로 변환"""
+        html_parts = ["<table border='1'>"]
+        for elem in table_elem:
+            tag = self._local_tag(elem.tag)
+            if tag == 'tr':
+                html_parts.append("<tr>")
+                for cell_elem in elem:
+                    cell_tag = self._local_tag(cell_elem.tag)
+                    if cell_tag == 'tc':
+                        cell_text = self._extract_cell_text(cell_elem)
+                        rowspan = cell_elem.get('rowSpan', cell_elem.get('rowspan', '1'))
+                        colspan = cell_elem.get('colSpan', cell_elem.get('colspan', '1'))
+                        
+                        attrs = ""
+                        if rowspan and rowspan != '1': attrs += f" rowspan='{rowspan}'"
+                        if colspan and colspan != '1': attrs += f" colspan='{colspan}'"
+                        
+                        html_parts.append(f"<td{attrs}>{cell_text}</td>")
+                html_parts.append("</tr>")
+        html_parts.append("</table>")
+        return "".join(html_parts)
+
+    def _extract_cell_text(self, cell_elem) -> str:
+        """셀 내부 텍스트 추출 (중첩 표 감지 포함)"""
+        parts = []
+        def walk(el):
+            tag = self._local_tag(el.tag)
+            if tag == 'p':
+                p_lines = []
+                self._parse_paragraph_and_tables(el, p_lines, in_cell=True)
+                joined = "<br>".join(p_lines)
+                if joined.strip():
+                    parts.append(joined.strip())
+                return
+            elif tag in ('tbl', 'table'):
+                html_table = self._parse_nested_table(el)
+                parts.append(html_table)
+                return
+            for child in el:
+                walk(child)
+        walk(cell_elem)
+        return "<br>".join(parts)
 
     # ─────────────── 이미지 및 유틸리티 ───────────────
 
