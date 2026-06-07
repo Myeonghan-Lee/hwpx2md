@@ -1,6 +1,6 @@
 """
 hwpx_converter.py
-HWPX → Markdown 변환 엔진 (병합 셀 지원 및 분석 최적화 통합 버전)
+HWPX → Markdown 변환 엔진 (병합 셀 자동 채우기 완벽 지원 버전)
 """
 
 import zipfile
@@ -15,7 +15,6 @@ from typing import List, Dict, Tuple, Optional
 
 @dataclass
 class ConvertResult:
-    """변환 결과 데이터 클래스"""
     filename: str
     success: bool
     markdown: str = ""
@@ -24,8 +23,6 @@ class ConvertResult:
 
 
 class HwpxToMarkdown:
-    """HWPX 파일을 Markdown으로 변환하는 엔진"""
-
     KNOWN_NAMESPACES = [
         "http://www.hancom.co.kr/hwpml/2011/paragraph",
         "http://www.hancom.co.kr/hwpml/2011/core",
@@ -142,12 +139,10 @@ class HwpxToMarkdown:
     def _walk_elements(self, elem, lines: list):
         tag = self._local_tag(elem.tag)
 
-        # 독립된 표 감지
         if tag in ('table', 'tbl'):
             lines.append(self._parse_table(elem))
             return
 
-        # 문단 내부 감지
         if tag == 'p':
             self._parse_paragraph_and_tables(elem, lines, in_cell=False)
             return
@@ -156,8 +151,6 @@ class HwpxToMarkdown:
             self._walk_elements(child, lines)
 
     def _parse_paragraph_and_tables(self, p_elem, lines: list, in_cell: bool):
-        """문단을 파싱하되, 내부에 표가 있으면 텍스트를 끊고 표를 별도로 추출"""
-        # 표 내부일 때는 제목 서식(#)을 강제로 무시
         heading_level = 0 if in_cell else self._get_heading_level(p_elem)
         current_texts = []
         
@@ -198,24 +191,20 @@ class HwpxToMarkdown:
         flush_text()
 
     def _extract_run_and_tables(self, run_elem) -> Tuple[str, List[ET.Element]]:
-        """<run> 태그 내의 텍스트와 숨겨진 표를 분리"""
         texts = []
         tables = []
         
         def walk_run(el):
             tag = self._local_tag(el.tag)
-            
             if tag in ('table', 'tbl'):
                 tables.append(el)
                 return 
-            
             if tag == 't' and el.text:
                 texts.append(el.text)
             elif tag == 'tab':
                 texts.append("    ")
             elif tag in ('lineBreak', 'softHyphen'):
                 texts.append("  \n")
-                
             for child in el:
                 walk_run(child)
         
@@ -226,10 +215,8 @@ class HwpxToMarkdown:
         if not text.strip():
             return text, tables
             
-        # 물결표 이스케이프
         text = text.replace("~", r"\~")
         
-        # 서식 추출
         bold = italic = strike = sup = sub = False
         for elem in run_elem:
             tag = self._local_tag(elem.tag)
@@ -270,12 +257,31 @@ class HwpxToMarkdown:
                     if 1 <= level <= 6: return level
         return 0
 
+    # ─────────────── 병합 정보 추출 유틸리티 ───────────────
+
+    def _get_span_values(self, tc_elem) -> Tuple[int, int]:
+        """HWPX의 복잡한 구조(<cellAddr> 등)를 뚫고 정확한 병합 행/열 개수를 추출"""
+        rowspan, colspan = 1, 1
+        
+        # 1. tc 태그 자체 속성 검사
+        for k, v in tc_elem.attrib.items():
+            if k.lower().endswith('rowspan'): rowspan = max(1, int(v))
+            elif k.lower().endswith('colspan'): colspan = max(1, int(v))
+            
+        # 2. tc의 하위 태그(주로 <hc:cellAddr>) 속성 정밀 검사
+        for child in tc_elem:
+            for k, v in child.attrib.items():
+                if k.lower().endswith('rowspan'): rowspan = max(1, int(v))
+                elif k.lower().endswith('colspan'): colspan = max(1, int(v))
+                
+        return rowspan, colspan
+
     # ─────────────── 테이블 파싱 (행/열 병합 셀 반복 채우기) ───────────────
 
     def _parse_table(self, table_elem) -> str:
         """최상위 표를 Markdown 문법으로 변환 (병합된 셀 내용 자동 반복)"""
         rows = []
-        active_spans = {}
+        active_spans = {}  # 병합 정보 기억 딕셔너리
 
         for tr_elem in table_elem:
             tag = self._local_tag(tr_elem.tag)
@@ -289,6 +295,7 @@ class HwpxToMarkdown:
             tc_elem = next(tc_iter, None)
 
             while True:
+                # 1. 윗줄에서 병합(rowspan)되어 내려온 데이터가 있다면 먼저 채움
                 while col_idx in active_spans and active_spans[col_idx]["count"] > 0:
                     current_row.append(active_spans[col_idx]["text"])
                     active_spans[col_idx]["count"] -= 1
@@ -296,17 +303,23 @@ class HwpxToMarkdown:
                         del active_spans[col_idx]
                     col_idx += 1
 
+                # 2. 이번 줄에서 더 이상 읽을 셀이 없을 때의 종료 조건
                 if tc_elem is None:
                     max_active_col = max(active_spans.keys()) if active_spans else -1
                     if col_idx > max_active_col:
                         break
                     else:
+                        # 병합 셀이 뒤에 남아있는데 중간 셀이 누락된 경우(HWP 특수오류 방어) 공백 삽입
+                        if col_idx not in active_spans:
+                            current_row.append("")
+                            col_idx += 1
                         continue
 
+                # 3. 새로운 셀 데이터 및 병합 정보 추출
                 cell_text = self._extract_cell_text(tc_elem)
-                rowspan = int(tc_elem.get('rowSpan', tc_elem.get('rowspan', '1')))
-                colspan = int(tc_elem.get('colSpan', tc_elem.get('colspan', '1')))
+                rowspan, colspan = self._get_span_values(tc_elem)
 
+                # 4. 열 병합(colspan)만큼 가로로 복제 & 행 병합(rowspan) 아래로 예약
                 for _ in range(colspan):
                     current_row.append(cell_text)
                     if rowspan > 1:
@@ -349,12 +362,11 @@ class HwpxToMarkdown:
                     cell_tag = self._local_tag(cell_elem.tag)
                     if cell_tag == 'tc':
                         cell_text = self._extract_cell_text(cell_elem)
-                        rowspan = cell_elem.get('rowSpan', cell_elem.get('rowspan', '1'))
-                        colspan = cell_elem.get('colSpan', cell_elem.get('colspan', '1'))
+                        rowspan, colspan = self._get_span_values(cell_elem)
                         
                         attrs = ""
-                        if rowspan and rowspan != '1': attrs += f" rowspan='{rowspan}'"
-                        if colspan and colspan != '1': attrs += f" colspan='{colspan}'"
+                        if rowspan > 1: attrs += f" rowspan='{rowspan}'"
+                        if colspan > 1: attrs += f" colspan='{colspan}'"
                         
                         html_parts.append(f"<td{attrs}>{cell_text}</td>")
                 html_parts.append("</tr>")
@@ -362,7 +374,6 @@ class HwpxToMarkdown:
         return "".join(html_parts)
 
     def _extract_cell_text(self, cell_elem) -> str:
-        """셀 내부 텍스트 추출 (중첩 표 감지 포함)"""
         parts = []
         def walk(el):
             tag = self._local_tag(el.tag)
@@ -400,7 +411,6 @@ class HwpxToMarkdown:
         if '}' in tag:
             return tag.split('}', 1)[1]
         return tag
-
 
 # ─────────────── 편의 함수 ───────────────
 
